@@ -1,48 +1,45 @@
 # ============================================
-# TRADING AI SYSTEM - VERCEL COMPATIBLE
-# Tested with Python 3.10
+# VERCEL DEPLOYMENT - WORKING REQUIREMENTS
+# Using pre-built wheels only (no compilation)
+# Python 3.9
 # ============================================
 
-# Web Framework
+# Web Framework (Pure Python - No compilation)
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
+uvicorn==0.24.0
 pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic-core==2.14.1
 python-multipart==0.0.6
+starlette==0.27.0
 
-# Security
+# Security (Pure Python)
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 cryptography==41.0.7
 
-# Data Processing
-numpy==1.24.4
-pandas==2.0.3
-pyarrow==14.0.1
+# Data Processing - Use pre-built wheels
+numpy==1.23.5
+pandas==1.5.3
+pytz==2023.3
 
-# ML - Lightweight (No PyTorch on Vercel)
-scikit-learn==1.3.2
-xgboost==2.0.3
-joblib==1.3.2
+# ML - Lightweight models
+scikit-learn==1.2.2
+xgboost==1.7.6
 
 # Image Processing
-Pillow==10.1.0
+Pillow==9.5.0
 
 # Utilities
 python-dotenv==1.0.0
-pyyaml==6.0.1
+pyyaml==6.0
 requests==2.31.0
-httpx==0.25.1
+httpx==0.24.1
 python-dateutil==2.8.2
 
-# Logging & Monitoring
+# Logging
 loguru==0.7.2
 tqdm==4.66.1
 
-# API Documentation
-python-multipart==0.0.6
-email-validator==2.1.0
-
-# Remove these - they cause Vercel build failures:
+# Remove these completely (they cause build failures):
 # torch, torchvision, opencv-python, albumentations
-# mlflow, shap, nvidia-*, llvmlite
+# shap, mlflow, pyarrow, numba, llvmlite
