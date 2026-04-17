@@ -1,0 +1,48 @@
+# CNN Model Configuration
+cnn:
+  architecture: efficientnet-b3
+  pretrained: true
+  embedding_dim: 1536
+  dropout: 0.3
+  input_size: 380  # EfficientNet-B3 optimal input
+  
+training:
+  batch_size: 32
+  epochs: 50
+  early_stopping_patience: 7
+  optimizer: AdamW
+  lr: 0.0001
+  lr_scheduler: CosineAnnealingLR
+  weight_decay: 0.0001
+  mixed_precision: true
+  gradient_clipping: 1.0
+  num_workers: 4
+  
+# Fusion Model (XGBoost) Configuration  
+fusion:
+  n_estimators: 500
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_weight: 5
+  objective: multi:softprob
+  num_class: 3
+  eval_metric: mlogloss
+  early_stopping_rounds: 30
+  tree_method: hist
+  
+# PCA Configuration
+pca:
+  n_components: 128
+  whiten: false
+  
+# Image Configuration
+image:
+  width: 380
+  height: 380
+  candles: 50
+  background_color: "#000000"
+  ema_20_color: "#00BFFF"  # DeepSkyBlue
+  ema_50_color: "#FF8C00"  # DarkOrange
+  volume_height_ratio: 0.15
