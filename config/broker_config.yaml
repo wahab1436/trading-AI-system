@@ -1,0 +1,40 @@
+# Broker Configuration
+broker:
+  primary: mt5
+  backup: oanda
+  
+# MT5 Configuration
+mt5:
+  server: "ICMarkets-Demo"
+  login: null  # Set via env var
+  password: null  # Set via env var
+  timeout: 30
+  max_retries: 3
+  
+# OANDA Configuration  
+oanda:
+  api_key: null  # Set via env var
+  account_id: null  # Set via env var
+  environment: practice  # or live
+  host: api-fxpractice.oanda.com
+  
+# Execution Settings
+execution:
+  default_order_type: market
+  max_slippage_pips: 0.5
+  retry_attempts: 3
+  retry_delay_seconds: 1
+  heartbeat_interval_seconds: 30
+  
+# Paper Trading
+paper_trading:
+  enabled_default: true
+  min_weeks_before_live: 4
+  min_trades_before_live: 100
+  performance_tolerance_pct: 0.15  # 15% variance allowed
+  
+# Monitoring
+monitoring:
+  max_latency_ms: 500
+  health_check_interval_seconds: 60
+  alert_on_disconnect: true
