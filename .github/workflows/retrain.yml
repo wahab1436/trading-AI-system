@@ -1,0 +1,369 @@
+name: Retrain - Weekly Model Retraining
+
+on:
+  schedule:
+    # Run every Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      force_retrain:
+        description: 'Force retrain all models'
+        type: boolean
+        default: false
+      dataset_version:
+        description: 'Dataset version to use'
+        type: string
+        default: 'latest'
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  check-drift:
+    name: Check Concept Drift
+    runs-on: ubuntu-latest
+    
+    outputs:
+      should_retrain: ${{ steps.drift_check.outputs.should_retrain }}
+      drift_score: ${{ steps.drift_check.outputs.drift_score }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Check concept drift
+        id: drift_check
+        run: |
+          python mlops/drift_monitor.py \
+            --check \
+            --threshold 0.2 \
+            --output drift_report.json
+          
+          DRIFT_SCORE=$(jq '.overall_drift' drift_report.json)
+          SHOULD_RETRAIN=$(jq '.should_retrain' drift_report.json)
+          
+          echo "drift_score=$DRIFT_SCORE" >> $GITHUB_OUTPUT
+          echo "should_retrain=$SHOULD_RETRAIN" >> $GITHUB_OUTPUT
+          
+          echo "Drift score: $DRIFT_SCORE"
+          echo "Should retrain: $SHOULD_RETRAIN"
+      
+      - name: Upload drift report
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: drift_report.json
+
+  fetch-new-data:
+    name: Fetch New Data
+    runs-on: ubuntu-latest
+    needs: check-drift
+    if: needs.check-drift.outputs.should_retrain == 'true' || github.event.inputs.force_retrain == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Fetch historical data
+        run: |
+          python etl/flows/fetch_historical.py \
+            --years 2 \
+            --output data/raw/
+        env:
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+      
+      - name: Validate new data
+        run: |
+          python data_engine/validator.py \
+            --input data/raw/ \
+            --output data/processed/ \
+            --fix-gaps \
+            --remove-outliers
+      
+      - name: Version data with DVC
+        run: |
+          dvc add data/raw/ data/processed/
+          dvc push
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  label-data:
+    name: Label Data
+    runs-on: ubuntu-latest
+    needs: fetch-new-data
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Run labeling pipeline
+        run: |
+          python etl/flows/label_data.py \
+            --input data/processed/ \
+            --output data/labels/ \
+            --atr-period 14 \
+            --lookahead 8 \
+            --htf-filter
+      
+      - name: Render images
+        run: |
+          python etl/flows/render_images.py \
+            --input data/processed/ \
+            --labels data/labels/ \
+            --output data/images/ \
+            --candles 50 \
+            --width 380 \
+            --height 380
+      
+      - name: Upload labeled dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: labeled-dataset
+          path: |
+            data/labels/
+            data/images/
+
+  train-models:
+    name: Train Models
+    runs-on: ubuntu-latest
+    needs: label-data
+    strategy:
+      matrix:
+        model: [cnn, fusion]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Download labeled dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: labeled-dataset
+          path: data/
+      
+      - name: Train CNN model
+        if: matrix.model == 'cnn'
+        run: |
+          python cnn_model/train.py \
+            --data data/images/ \
+            --epochs 50 \
+            --batch-size 32 \
+            --output models/cnn/
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+      
+      - name: Extract CNN embeddings
+        if: matrix.model == 'cnn'
+        run: |
+          python cnn_model/infer.py \
+            --model models/cnn/best_model.pt \
+            --data data/images/ \
+            --output embeddings/
+      
+      - name: Train fusion model
+        if: matrix.model == 'fusion'
+        run: |
+          python fusion_model/train_xgb.py \
+            --embeddings embeddings/ \
+            --smc-features data/smc_features/ \
+            --labels data/labels/ \
+            --output models/fusion/
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+      
+      - name: Upload trained models
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models-${{ matrix.model }}
+          path: models/${{ matrix.model }}/
+
+  validate-models:
+    name: Validate Models
+    runs-on: ubuntu-latest
+    needs: train-models
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Download models
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models-cnn
+          path: models/cnn/
+      
+      - name: Download fusion model
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models-fusion
+          path: models/fusion/
+      
+      - name: Run backtest validation
+        run: |
+          python backtest/walk_forward.py \
+            --model models/fusion/fusion_model.pkl \
+            --data data/processed/ \
+            --train-windows 4 \
+            --test-windows 1 \
+            --output backtest_results.json
+      
+      - name: Check performance thresholds
+        run: |
+          python -c "
+          import json
+          with open('backtest_results.json') as f:
+              results = json.load(f)
+          
+          # Check if model meets minimum requirements
+          assert results['profit_factor'] > 1.5, f\"Profit factor {results['profit_factor']} < 1.5\"
+          assert results['win_rate'] > 0.48, f\"Win rate {results['win_rate']} < 0.48\"
+          assert results['sharpe_ratio'] > 1.0, f\"Sharpe {results['sharpe_ratio']} < 1.0\"
+          assert results['max_drawdown'] < 0.20, f\"Drawdown {results['max_drawdown']} > 0.20\"
+          
+          print('✓ Model validation passed!')
+          "
+      
+      - name: Upload validation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-results
+          path: backtest_results.json
+
+  promote-model:
+    name: Promote to Champion
+    runs-on: ubuntu-latest
+    needs: validate-models
+    if: success()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download models
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models-fusion
+          path: models/challenger/
+      
+      - name: Compare with champion
+        run: |
+          python mlops/model_registry.py \
+            --challenger models/challenger/ \
+            --champion models/champion/ \
+            --compare-metrics profit_factor,win_rate,sharpe_ratio \
+            --output comparison.json
+      
+      - name: Promote if better
+        run: |
+          python mlops/model_registry.py \
+            --promote \
+            --model models/challenger/ \
+            --tag champion \
+            --previous-tag retired
+      
+      - name: Update MLflow registry
+        run: |
+          python mlops/experiment_tracker.py \
+            --register-model \
+            --model-path models/champion/ \
+            --stage production
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: promote-model
+    environment: staging
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download champion model
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models-fusion
+          path: models/champion/
+      
+      - name: Build Docker image
+        run: |
+          docker build -t trading-ai:staging \
+            --build-arg MODEL_PATH=models/champion/ \
+            --build-arg ENVIRONMENT=staging \
+            -f Dockerfile .
+      
+      - name: Deploy to staging server
+        run: |
+          # Deploy to your staging environment
+          docker push trading-ai:staging
+          ssh staging-server "docker pull trading-ai:staging && docker-compose up -d"
+      
+      - name: Run smoke tests
+        run: |
+          python tests/smoke_test.py --url https://staging.trading-ai.com --health-check
+      
+      - name: Slack notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: Model Retraining Complete
+          SLACK_MESSAGE: |
+            ✅ New champion model deployed to staging
+            📊 Profit Factor: >1.5
+            🎯 Win Rate: >48%
+            📈 Sharpe Ratio: >1.0
+            🔄 Ready for 4-week paper trading validation
+          SLACK_COLOR: good
+
+  notify-completion:
+    name: Retrain Complete Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: always()
+    
+    steps:
+      - name: Send completion notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: Weekly Retrain Pipeline Status
+          SLACK_MESSAGE: |
+            Status: ${{ job.status }}
+            Drift Score: ${{ needs.check-drift.outputs.drift_score }}
+            Model: ${{ needs.validate-models.result }}
+            Deployment: ${{ needs.deploy-staging.result }}
+            
+            📅 Next retrain: Next Sunday 00:00 UTC
+          SLACK_COLOR: ${{ job.status == 'success' && 'good' || 'danger' }}
