@@ -2,7 +2,7 @@
 # VERCEL DEPLOYMENT - WORKING 100%
 # Python 3.9 - Pre-built wheels only
 # ============================================
-
+numpy>=1.26.4
 # Web Framework
 fastapi==0.104.1
 uvicorn==0.24.0
