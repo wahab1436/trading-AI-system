@@ -1,0 +1,28 @@
+[core]
+    remote = storage
+    analytics = false
+    autostage = true
+
+['remote "storage"']
+    url = s3://trading-ai-data/
+    endpointurl = 
+    access_key_id = ${env.AWS_ACCESS_KEY_ID}
+    secret_access_key = ${env.AWS_SECRET_ACCESS_KEY}
+    region = ${env.AWS_DEFAULT_REGION}
+    version_aware = true
+
+['remote "backup"']
+    url = /mnt/backup/trading-ai-data/
+    
+[state]
+    dir = .dvc/tmp
+
+[cache]
+    dir = .dvc/cache
+    type = hardlink,symlink
+
+['fs "s3"']
+    client_kwargs = {'endpoint_url': '${env.AWS_ENDPOINT_URL}'}
+
+[feature]
+    no_scm = false
