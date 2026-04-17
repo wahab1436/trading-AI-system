@@ -416,4 +416,195 @@ class ConfluenceFilter(BaseFilter):
             score += 2
             
         # BOS confirmation
-       
+        if signal.bos_recent:
+            score += 1
+            
+        # CHoCH detection (strong signal)
+        if signal.choch_detected:
+            score += 2
+            
+        # Market state alignment
+        if signal.market_state == "trending_bull" and signal.signal_type == SignalType.BUY:
+            score += 2
+        elif signal.market_state == "trending_bear" and signal.signal_type == SignalType.SELL:
+            score += 2
+            
+        return score
+
+
+class FilterChain:
+    """
+    Chains multiple filters together for sequential processing.
+    Stops at first failing filter.
+    """
+    
+    def __init__(self, filters: Optional[List[BaseFilter]] = None):
+        self.filters = filters or []
+        
+    def add_filter(self, filter_obj: BaseFilter) -> 'FilterChain':
+        """Add a filter to the chain"""
+        self.filters.append(filter_obj)
+        return self
+        
+    def remove_filter(self, filter_name: str) -> bool:
+        """Remove a filter by name"""
+        for i, f in enumerate(self.filters):
+            if f.name == filter_name:
+                self.filters.pop(i)
+                return True
+        return False
+        
+    def apply_all(
+        self,
+        signal: TradeSignal,
+        context: Dict
+    ) -> Tuple[bool, List[FilterResult], Optional[float]]:
+        """
+        Apply all filters in sequence.
+        
+        Returns:
+            (passed, results, adjusted_confidence)
+        """
+        results = []
+        adjusted_confidence = signal.confidence
+        
+        for filter_obj in self.filters:
+            result = filter_obj.apply(signal, context)
+            results.append(result)
+            
+            if not result.passed:
+                logger.debug(f"Signal rejected by {filter_obj.name}: {result.reason}")
+                return False, results, None
+                
+            if result.adjusted_confidence:
+                adjusted_confidence = result.adjusted_confidence
+                
+        return True, results, adjusted_confidence
+        
+    def get_enabled_filters(self) -> List[BaseFilter]:
+        """Get list of enabled filters"""
+        return [f for f in self.filters if f.enabled]
+        
+    def get_filter_status(self) -> Dict[str, bool]:
+        """Get status of all filters"""
+        return {f.name: f.enabled for f in self.filters}
+        
+    def enable_all(self):
+        """Enable all filters"""
+        for f in self.filters:
+            f.enabled = True
+            
+    def disable_all(self):
+        """Disable all filters (for testing)"""
+        for f in self.filters:
+            f.enabled = False
+
+
+class AdaptiveFilterChain(FilterChain):
+    """
+    Filter chain that adapts based on market conditions.
+    Can enable/disable filters dynamically.
+    """
+    
+    def __init__(self, filters: Optional[List[BaseFilter]] = None):
+        super().__init__(filters)
+        self.market_regime = "normal"  # normal, high_volatility, low_volatility, trending
+        
+    def update_market_regime(self, context: Dict):
+        """Update market regime based on context"""
+        
+        volatility = context.get('volatility_regime', 1.0)
+        
+        if volatility > 1.5:
+            self.market_regime = "high_volatility"
+        elif volatility < 0.7:
+            self.market_regime = "low_volatility"
+        else:
+            self.market_regime = "normal"
+            
+        # Adjust filters based on regime
+        self._adjust_filters()
+        
+    def _adjust_filters(self):
+        """Enable/disable filters based on market regime"""
+        
+        for f in self.filters:
+            if f.name == "SpreadFilter":
+                # Stricter spread limits in high volatility
+                if hasattr(f, 'max_spread_pips'):
+                    if self.market_regime == "high_volatility":
+                        f.max_spread_pips = 2.0
+                    else:
+                        f.max_spread_pips = 3.0
+                        
+            elif f.name == "ConfidenceFilter":
+                # Higher confidence requirement in high volatility
+                if hasattr(f, 'min_confidence'):
+                    if self.market_regime == "high_volatility":
+                        f.min_confidence = 0.75
+                    elif self.market_regime == "low_volatility":
+                        f.min_confidence = 0.60
+                    else:
+                        f.min_confidence = 0.65
+                        
+    def apply_all(
+        self,
+        signal: TradeSignal,
+        context: Dict
+    ) -> Tuple[bool, List[FilterResult], Optional[float]]:
+        """Apply filters with market regime awareness"""
+        
+        # Update regime first
+        self.update_market_regime(context)
+        
+        return super().apply_all(signal, context)
+
+
+# Pre-configured filter chains for different trading modes
+
+def get_paper_trading_filters() -> FilterChain:
+    """Get filter chain for paper trading (more lenient)"""
+    return FilterChain([
+        ConfidenceFilter(min_confidence=0.60, adaptive=False),
+        SpreadFilter(max_spread_pips=4.0),
+        TimeFilter(allowed_sessions=["london", "overlap", "new_york"]),
+        ConfluenceFilter(min_confluence_score=2)
+    ])
+
+
+def get_live_trading_filters() -> FilterChain:
+    """Get filter chain for live trading (stricter)"""
+    return FilterChain([
+        ConfidenceFilter(min_confidence=0.70, adaptive=True),
+        SpreadFilter(max_spread_pips=2.5),
+        VolumeFilter(min_volume_ratio=0.6),
+        TimeFilter(allowed_sessions=["london", "overlap"]),
+        NewsFilter(pre_news_minutes=30, post_news_minutes=30),
+        CorrelationFilter(correlation_threshold=0.7),
+        MaxDrawdownFilter(max_drawdown_pct=0.08),
+        ConfluenceFilter(min_confluence_score=3)
+    ])
+
+
+def get_aggressive_filters() -> FilterChain:
+    """Get filter chain for aggressive trading (more signals)"""
+    return FilterChain([
+        ConfidenceFilter(min_confidence=0.55, adaptive=False),
+        SpreadFilter(max_spread_pips=5.0),
+        ConfluenceFilter(min_confluence_score=1)
+    ])
+
+
+def get_conservative_filters() -> FilterChain:
+    """Get filter chain for conservative trading (fewer, higher quality signals)"""
+    return FilterChain([
+        ConfidenceFilter(min_confidence=0.80, adaptive=True),
+        SpreadFilter(max_spread_pips=1.5),
+        VolumeFilter(min_volume_ratio=0.8),
+        TimeFilter(allowed_sessions=["overlap"]),
+        NewsFilter(pre_news_minutes=45, post_news_minutes=45),
+        CorrelationFilter(correlation_threshold=0.5),
+        MaxDrawdownFilter(max_drawdown_pct=0.05),
+        ConsistencyFilter(min_win_rate=0.50, lookback_trades=30),
+        ConfluenceFilter(min_confluence_score=4)
+    ])
