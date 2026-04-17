@@ -292,4 +292,44 @@ class DriftMonitor:
         
         # Retrain if:
         # 1. Any critical drift in PSI or performance
-        # 2
+        # 2. 3+ warning drifts in last hour
+        # 3. Overall drift score > 0.5
+        
+        if any(a.alert_type in ["psi", "performance"] and a.severity == "critical" for a in critical_alerts):
+            return True, "Critical drift detected in PSI or performance"
+            
+        if len(critical_alerts) >= 1:
+            return True, f"Critical drift detected: {len(critical_alerts)} critical alerts"
+            
+        if len(warning_alerts) >= 3:
+            return True, f"Multiple warning drifts: {len(warning_alerts)} warnings in last hour"
+            
+        if self.current_drift_score > 0.5:
+            return True, f"Drift score exceeded threshold: {self.current_drift_score:.2f}"
+            
+        return False, "No retraining required"
+        
+    def get_drift_report(self) -> Dict:
+        """Get comprehensive drift report"""
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "drift_score": self.current_drift_score,
+            "requires_retraining": self.requires_retraining()[0],
+            "alerts_count": len(self.alerts),
+            "alerts_last_hour": len([a for a in self.alerts if a.timestamp > datetime.now() - timedelta(hours=1)]),
+            "feature_buffers_size": {k: len(v) for k, v in self.feature_buffers.items()},
+            "samples_collected": len(self.prediction_buffers),
+            "current_win_rate": np.mean(self.outcome_buffers) if self.outcome_buffers else None,
+            "current_avg_confidence": np.mean(self.confidence_buffers) if self.confidence_buffers else None
+        }
+        
+    def reset(self):
+        """Reset all buffers and alerts"""
+        self.feature_buffers.clear()
+        self.prediction_buffers.clear()
+        self.confidence_buffers.clear()
+        self.outcome_buffers.clear()
+        self.alerts.clear()
+        self.current_drift_score = 0.0
+        logger.info("Drift monitor reset")
