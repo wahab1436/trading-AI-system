@@ -1,0 +1,269 @@
+name: Deploy - Production Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      version:
+        description: 'Model version to deploy'
+        type: string
+        required: true
+      confirm:
+        description: 'Confirm deployment to production'
+        type: boolean
+        required: true
+        default: false
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_IMAGE_NAME: trading-ai-system
+
+jobs:
+  validate-deployment:
+    name: Validate Deployment Readiness
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Validate paper trading results
+        if: github.event.inputs.environment == 'production'
+        run: |
+          python mlops/validate_deployment.py \
+            --model-version ${{ github.event.inputs.version }} \
+            --min-paper-trades 100 \
+            --min-paper-weeks 4 \
+            --max-performance-deviation 0.15
+      
+      - name: Check kill switch
+        run: |
+          python risk_engine/kill_switch.py --check --online
+      
+      - name: Validate broker connection
+        run: |
+          python execution/health_check.py \
+            --broker mt5 \
+            --timeout 10 \
+            --retries 3
+        env:
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+      
+      - name: Validate risk limits
+        run: |
+          python risk_engine/risk_limits.py \
+            --validate-config \
+            --max-risk 0.01 \
+            --max-daily-loss 0.03
+
+  build-production:
+    name: Build Production Image
+    runs-on: ubuntu-latest
+    needs: validate-deployment
+    if: github.event.inputs.confirm == 'true' || github.event.inputs.environment != 'production'
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.version }}
+            ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            MODEL_VERSION=${{ github.event.inputs.version }}
+            ENVIRONMENT=${{ github.event.inputs.environment }}
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-production
+    if: github.event.inputs.environment == 'staging'
+    environment: staging
+    
+    steps:
+      - name: Deploy to staging cluster
+        run: |
+          # Pull latest image
+          docker pull ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.version }}
+          
+          # Deploy with docker-compose
+          docker-compose -f docker-compose.staging.yml up -d --force-recreate
+          
+          # Wait for services to be healthy
+          sleep 30
+          
+          # Run health check
+          curl -f http://localhost:8000/health || exit 1
+      
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ -v --url http://localhost:8000
+      
+      - name: Enable paper trading mode
+        run: |
+          curl -X POST http://localhost:8000/config \
+            -H "Content-Type: application/json" \
+            -d '{"paper_trading": true, "shadow_mode": true}'
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-production
+    if: github.event.inputs.environment == 'production' && github.event.inputs.confirm == 'true'
+    environment: 
+      name: production
+      url: https://trading-ai.example.com
+    
+    steps:
+      - name: Backup current production
+        run: |
+          # Backup current model and config
+          ssh prod-server "docker exec trading-ai python backup.py --output /backups/pre-deploy-$(date +%Y%m%d_%H%M%S)"
+      
+      - name: Deploy to production cluster
+        run: |
+          # Blue-green deployment
+          docker pull ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.version }}
+          
+          # Start green environment
+          docker-compose -f docker-compose.production.yml up -d --scale api=3 --no-recreate
+          
+          # Wait for green to be healthy
+          sleep 60
+          
+          # Run canary test (10% traffic)
+          for i in {1..100}; do
+            curl -f https://api.trading-ai.com/health || exit 1
+            sleep 1
+          done
+          
+          # Switch traffic to green
+          # (Implementation depends on your load balancer)
+          
+          # Shutdown blue environment
+          docker-compose -f docker-compose.production.yml stop blue
+      
+      - name: Enable live trading (micro lots)
+        run: |
+          curl -X POST https://api.trading-ai.com/config \
+            -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "paper_trading": false,
+              "live_trading": true,
+              "max_lot_size": 0.01,
+              "max_daily_trades": 5,
+              "risk_per_trade": 0.005
+            }'
+      
+      - name: Monitor initial trades
+        run: |
+          # Monitor first 10 trades
+          python monitoring/watch_trades.py \
+            --duration 3600 \
+            --max-loss 100 \
+            --alert-on-consecutive-losses 2
+
+  monitoring-setup:
+    name: Setup Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+      - name: Deploy Grafana dashboard
+        run: |
+          curl -X POST http://grafana:3000/api/dashboards/db \
+            -H "Authorization: Bearer ${{ secrets.GRAFANA_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d @monitoring/grafana/dashboard.json
+      
+      - name: Configure Prometheus alerts
+        run: |
+          curl -X POST http://prometheus:9090/api/v1/alerts \
+            -H "Content-Type: application/json" \
+            -d @monitoring/prometheus/alerts.yml
+      
+      - name: Setup Slack alerts
+        run: |
+          python mlops/alerting.py \
+            --configure \
+            --webhook ${{ secrets.SLACK_WEBHOOK_URL }} \
+            --channel "#trading-alerts" \
+            --test
+
+  rollback-on-failure:
+    name: Automatic Rollback
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: failure()
+    
+    steps:
+      - name: Detect failure
+        run: |
+          echo "Deployment failed! Initiating rollback..."
+      
+      - name: Restore previous version
+        run: |
+          ssh prod-server "docker exec trading-ai python restore.py --backup /backups/latest"
+      
+      - name: Restart services
+        run: |
+          docker-compose -f docker-compose.production.yml restart
+      
+      - name: Send alert
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: 🚨 PRODUCTION ROLLBACK TRIGGERED
+          SLACK_MESSAGE: |
+            Deployment version: ${{ github.event.inputs.version }}
+            Environment: ${{ github.event.inputs.environment }}
+            Action: Rolled back to previous stable version
+            Manual intervention required!
+          SLACK_COLOR: danger
+          SLACK_FOOTER: Trading AI System - Emergency
+
+  notify-deployment:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production, rollback-on-failure]
+    if: always()
+    
+    steps:
+      - name: Send deployment summary
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TITLE: "🚀 Trading AI System Deployment: ${{ github.event.inputs.environment }}"
+          SLACK_MESSAGE: |
+            Version: ${{ github.event.inputs.version }}
+            Status: ${{ job.status
