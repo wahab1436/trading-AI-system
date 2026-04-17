@@ -202,4 +202,30 @@ def train_fusion_pipeline(
     """Complete training pipeline for fusion model"""
     
     # Load data
-    cnn_embeddings = np.load(cnn_embedd
+    cnn_embeddings = np.load(cnn_embeddings_path)
+    smc_features = np.load(smc_features_path)
+    labels = np.load(labels_path)
+    
+    logger.info(f"CNN embeddings shape: {cnn_embeddings.shape}")
+    logger.info(f"SMC features shape: {smc_features.shape}")
+    logger.info(f"Labels shape: {labels.shape}")
+    
+    # Train model
+    fusion = FusionModel()
+    results = fusion.train(cnn_embeddings, smc_features, labels)
+    
+    # Log to MLflow
+    with mlflow.start_run(run_name="fusion_model_training"):
+        mlflow.log_params(fusion.xgb_params)
+        mlflow.log_metrics({
+            'mean_cv_score': results['mean_cv_score']
+        })
+        
+        # Log feature importance
+        for name, imp in list(results['feature_importance'].items())[:20]:
+            mlflow.log_metric(f'importance_{name}', imp)
+            
+    # Save model
+    fusion.save(output_path)
+    
+    return fusion
