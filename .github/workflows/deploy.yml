@@ -266,4 +266,15 @@ jobs:
           SLACK_TITLE: "🚀 Trading AI System Deployment: ${{ github.event.inputs.environment }}"
           SLACK_MESSAGE: |
             Version: ${{ github.event.inputs.version }}
-            Status: ${{ job.status
+            Status: ${{ job.status }}
+            Deployed by: ${{ github.actor }}
+            
+            📊 Metrics:
+            - Uptime: Monitoring active
+            - Latency: <200ms target
+            - Error Rate: 0% target
+            
+            🔗 Dashboard: https://grafana.trading-ai.com
+            📈 API: https://api.trading-ai.com/docs
+          SLACK_COLOR: ${{ job.status == 'success' && 'good' || 'danger' }}
+          SLACK_FOOTER: Trading AI System - Production Ready
