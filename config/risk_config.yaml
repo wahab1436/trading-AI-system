@@ -1,0 +1,46 @@
+# Risk Management Configuration
+risk:
+  max_risk_per_trade_pct: 0.01  # 1%
+  max_daily_loss_pct: 0.03  # 3%
+  max_concurrent_trades: 3
+  max_consecutive_losses: 3
+  max_drawdown_pct: 0.10  # 10%
+  correlation_threshold: 0.7
+  
+# Position Sizing
+position_sizing:
+  min_lot_size: 0.01
+  max_lot_size: 1.0
+  default_pip_value: 10.0  # For 1 lot on XAUUSD
+  risk_scaling_enabled: true
+  
+# Stop Loss / Take Profit
+sl_tp:
+  sl_atr_multiplier: 1.5
+  tp_atr_multiplier: 2.5  # ~1.67 R:R
+  min_sl_pips: 50
+  max_sl_pips: 500
+  
+# Kill Switch
+kill_switch:
+  enabled: true
+  daily_loss_limit_pct: 0.03
+  max_drawdown_pct: 0.10
+  auto_reset_hours: 24  # Reset after X hours
+  cooldown_minutes: 60  # After kill trigger
+  
+# News Blackout
+news_blackout:
+  enabled: true
+  pre_news_minutes: 30
+  post_news_minutes: 30
+  
+# Weekend Rules
+weekend:
+  close_positions_at: "21:00 UTC"  # Friday
+  no_trading_on: ["Saturday", "Sunday"]
+  
+# Spread Filter
+spread:
+  max_spread_multiplier: 3.0  # 3x average
+  min_spread_check_pips: 0.1
