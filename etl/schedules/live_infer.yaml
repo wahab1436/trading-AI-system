@@ -1,0 +1,212 @@
+# Live Inference Schedule Configuration
+# Triggers model inference on every 15-minute candle close
+
+schedule:
+  name: "live_inference"
+  description: "Live inference pipeline - runs on every 15-minute candle close"
+  
+  # Cron schedule: Every 15 minutes at :00, :15, :30, :45
+  cron: "*/15 * * * *"
+  
+  # Timezone
+  timezone: "UTC"
+  
+  # Flow parameters
+  parameters:
+    symbols:
+      - "XAUUSD"
+      - "EURUSD"
+    timeframe: "15m"
+    min_confidence: 0.65
+    execute_trades: false  # Set to true for live execution
+    
+  # Inference configuration
+  inference:
+    # Model to use (champion or specific version)
+    model_version: "champion"
+    
+    # Fallback model if champion fails
+    fallback_model_version: "previous_champion"
+    
+    # Confidence thresholds
+    confidence:
+      min_for_signal: 0.65
+      min_for_execution: 0.75
+      high_confidence: 0.85
+      
+    # Signal filters
+    filters:
+      - type: "spread_filter"
+        max_spread_pips: 0.5
+        check_before_signal: true
+        
+      - type: "volatility_filter"
+        min_atr_percentile: 20
+        max_atr_percentile: 95
+        
+      - type: "session_filter"
+        exclude_sessions: ["asian"]  # For XAUUSD
+        include_overlap_only: false
+        
+      - type: "news_filter"
+        exclude_news_window_minutes: 30
+        red_folder_events:
+          - "NFP"
+          - "CPI" 
+          - "FOMC"
+          - "GDP"
+          - "Unemployment"
+          
+      - type: "correlation_filter"
+        max_correlation: 0.7
+        check_symbols: ["EURUSD"]
+        
+  # Data freshness requirements
+  data_freshness:
+    max_candle_age_seconds: 60  # Candle must be less than 60 seconds old
+    min_candles_for_prediction: 50
+    validation_required: true
+    
+  # Performance requirements
+  performance:
+    max_inference_latency_ms: 200
+    max_total_latency_ms: 500
+    min_signal_interval_seconds: 60  # Don't generate signals too frequently
+    
+  # Rate limiting
+  rate_limits:
+    max_signals_per_hour: 12
+    max_signals_per_day: 50
+    max_concurrent_inferences: 2
+    
+  # Execution mode
+  execution:
+    mode: "paper"  # paper, live, shadow
+    broker: "mt5"
+    paper_balance: 10000
+    
+    # Position sizing
+    position_sizing:
+      risk_per_trade_pct: 0.01
+      max_lot_size: 0.1  # Micro lots for start
+      min_lot_size: 0.01
+      
+    # Risk limits
+    risk_limits:
+      max_daily_trades: 10
+      max_concurrent_positions: 2
+      max_daily_loss_pct: 0.02
+      
+  # Monitoring
+  monitoring:
+    # Log every prediction
+    log_predictions: true
+    log_features: true
+    log_explanations: true
+    
+    # Metrics to track
+    metrics:
+      - "prediction_confidence"
+      - "inference_latency_ms"
+      - "signal_generation_rate"
+      - "model_version"
+      
+    # Alert thresholds
+    alerts:
+      - metric: "inference_latency_ms"
+        threshold: 500
+        severity: "warning"
+        
+      - metric: "avg_confidence"
+        threshold: 0.50
+        severity: "warning"
+        lookback_minutes: 60
+        
+      - metric: "prediction_rate"
+        threshold: 0  # Zero predictions
+        severity: "critical"
+        lookback_minutes: 30
+        
+  # Output destinations
+  outputs:
+    # Save predictions to database
+    database:
+      enabled: true
+      table: "predictions"
+      connection: "postgresql://localhost:5432/trading_ai"
+      
+    # Publish to message queue
+    message_queue:
+      enabled: true
+      type: "redis"
+      host: "localhost"
+      port: 6379
+      channel: "trading_signals"
+      
+    # Log to file
+    file_log:
+      enabled: true
+      path: "/var/log/trading-ai/predictions/"
+      format: "json"
+      rotation: "daily"
+      
+    # Webhook for external systems
+    webhook:
+      enabled: false
+      url: "https://your-webhook.com/signals"
+      headers:
+        Content-Type: "application/json"
+        
+  # Notifications
+  notifications:
+    on_signal:
+      enabled: true
+      min_confidence_for_notify: 0.80
+      channels:
+        - type: "slack"
+          channel: "#trading-signals"
+          
+    on_error:
+      enabled: true
+      channels:
+        - type: "slack"
+          channel: "#trading-errors"
+        - type: "email"
+          recipients: ["ops@trading-ai.com"]
+          
+  # Resource requirements
+  resources:
+    cpu: 2
+    memory: "4Gi"
+    gpu: 0  # CPU inference is fine for 15m intervals
+    
+  # Health check
+  health_check:
+    enabled: true
+    interval_seconds: 60
+    endpoints:
+      - "/health"
+      - "/models/status"
+      
+  # Retry configuration
+  retry:
+    max_attempts: 3
+    backoff_factor: 2
+    retry_on:
+      - "ConnectionError"
+      - "TimeoutError"
+      - "BrokerDisconnect"
+      
+  # Circuit breaker
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout_seconds: 300
+    half_open_attempts: 3
+    
+  # Feature flags
+  features:
+    enable_shap_explanations: true
+    enable_drift_detection: true
+    enable_performance_tracking: true
+    save_intermediate_results: false
