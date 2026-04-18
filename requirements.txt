@@ -5,7 +5,7 @@ python-multipart
 pydantic
 
 
-numpy
+
 scikit-learn
 
 
